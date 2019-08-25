@@ -1,15 +1,11 @@
 #version 130
-#define EPSILON 0.0001
-#define DOMAIN(x) (abs(p.x) <= 1.0 && abs(p.y) <= 1.0 && abs(p.z) <= 1.0)
+#define EPSILON 0.001
+#define DOMAIN(x)
 
 uniform float u_time;
 
 uniform mat4 u_world;
 uniform mat4 u_world_inv;
-
-float sphere(in vec3 p, float r) {
-    return length(p) - r;
-}
 
 float map(in vec3 p) {
     float t = u_time;
@@ -44,12 +40,13 @@ vec3 grad(vec3 p) {
 }
 
 void render(in vec3 ro, in vec3 rd, out vec4 frag_color) {
-    float h = 0;
+    float h = EPSILON;
 
     for (int i = 0; i < 256; ++i) {
         vec3 p = ro + rd * h;
 
-        if (!DOMAIN(p))
+        // out of domain
+        if (abs(p.x) > 1.0 || abs(p.y) > 1.0 || abs(p.z) > 1.0)
             break;
 
         float dist = map(p);
