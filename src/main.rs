@@ -8,9 +8,12 @@ mod structs;
 fn main() {
     let sdl = sdl2::init().unwrap();
     let video = sdl.video().unwrap();
+
+    let (w, h) = (1024, 600);
     let window = video
-        .window("Window", 800, 600)
+        .window("Window", w as u32, h as u32)
         .position_centered()
+        //.resizable()
         .opengl()
         .build()
         .unwrap();
@@ -24,9 +27,8 @@ fn main() {
     let mut imgui = Context::create();
     let mut imgui_sdl2 = ImguiSdl2::new(&mut imgui, &window);
     let imgui_render = ImguiGl::new(&mut imgui, |s| video.gl_get_proc_address(s) as _);
-
     let mut event_pump = sdl.event_pump().unwrap();
-    let mut app = structs::App::default();
+    let mut app = structs::App::new(w, h);
 
     while app.app_running {
         event_pump.poll_iter().for_each(|e| {
@@ -39,13 +41,12 @@ fn main() {
 
         app.render();
 
-        {
-            imgui_sdl2.prepare_frame(imgui.io_mut(), &window, &event_pump.mouse_state());
-            let ui = imgui.frame();
-            ui.draw_gui(&mut app);
-            imgui_sdl2.prepare_render(&ui, &window);
-            imgui_render.render(ui);
-        }
+        imgui_sdl2.prepare_frame(imgui.io_mut(), &window, &event_pump.mouse_state());
+        let ui = imgui.frame();
+        ui.draw_gui(&mut app);
+        imgui_sdl2.prepare_render(&ui, &window);
+        imgui_render.render(ui);
+
         window.gl_swap_window();
     }
 }

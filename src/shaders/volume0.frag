@@ -6,6 +6,7 @@ uniform float u_time;
 
 uniform mat4 u_world;
 uniform mat4 u_world_inv;
+uniform mat4 u_mvp;
 
 float map(in vec3 p) {
     float t = u_time;
@@ -60,6 +61,10 @@ void render(in vec3 ro, in vec3 rd, out vec4 frag_color) {
 
             frag_color.rgb *= lit;
             frag_color.rgb = sqrt(frag_color.rgb);
+
+            vec4 mvp_p = u_mvp * vec4(p, 1.0);
+            gl_FragDepth = mvp_p.z / mvp_p.w;
+
             return;
         }
 
@@ -74,7 +79,6 @@ in vec4 v_world_pos;
 out vec4 _frag_color;
 
 uniform vec2 u_resolution;
-uniform mat4 u_mvp;
 uniform mat4 u_mvp_inv;
 uniform mat4 u_vp;
 uniform mat4 u_vp_inv;

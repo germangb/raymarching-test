@@ -1,6 +1,7 @@
 use gl::types::*;
 use glm::{Mat4, Vec3};
-use sdl2::event::Event;
+use imgui::ImString;
+use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use std::time::Duration;
 use std::{mem, ptr};
@@ -19,6 +20,9 @@ macro_rules! check {
 
 #[derive(imgui_ext::Gui)]
 pub struct App {
+    app_width: usize,
+    app_height: usize,
+
     #[imgui(checkbox)]
     pub app_running: bool,
     #[imgui(checkbox)]
@@ -28,15 +32,10 @@ pub struct App {
     #[imgui(color(edit))]
     app_back: [f32; 4],
     // gl
-    #[imgui]
     gl_cuboid_vbo: GLuint,
-    #[imgui]
     gl_cuboid_ebo: GLuint,
-    #[imgui]
     gl_cuboid_vao: GLuint,
-    #[imgui]
     gl_cuboid_program: GLuint,
-    #[imgui]
     gl_cuboid_transform: GLint,
     // camera
     #[imgui(checkbox)]
@@ -63,7 +62,13 @@ pub struct App {
     cam_view: Mat4,
     // volumes
     #[imgui(tree(node(nested)))]
-    volume: Volume,
+    volume0: Volume,
+    #[imgui(tree(node(nested)))]
+    volume1: Volume,
+    #[imgui(tree(node(nested)))]
+    volume2: Volume,
+    #[imgui(tree(node(nested)))]
+    volume3: Volume,
 }
 
 impl Drop for App {
@@ -83,37 +88,119 @@ pub struct Volume {
     enabled: bool,
     #[imgui(checkbox)]
     wireframe: bool,
-    #[imgui]
+    #[imgui(slider(min = "0.1", max = "4.0"))]
+    time_dilation: f32,
+    #[imgui(drag(speed = "0.1"))]
+    time_shift: f32,
+
+    // gl
     program: GLuint,
-    #[imgui]
     u_resolution: GLint,
-    #[imgui]
     u_time: GLint,
-    #[imgui]
     u_mvp: GLint,
-    #[imgui]
     u_mvp_inv: GLint,
-    #[imgui]
     u_vp: GLint,
-    #[imgui]
     u_vp_inv: GLint,
-    #[imgui]
     u_proj: GLint,
-    #[imgui]
     u_proj_inv: GLint,
-    #[imgui]
     u_world: GLint,
-    #[imgui]
     u_world_inv: GLint,
-    #[imgui(drag(map = "na_to_gui_vec3"))]
+
+    #[imgui(drag(map = "na_to_gui_vec3", speed = "0.1"))]
     position: Vec3,
-    #[imgui(drag(map = "na_to_gui_vec3"))]
+    #[imgui(drag(map = "na_to_gui_vec3", speed = "0.1"))]
     scale: Vec3,
+
     // euler rotation angles
     #[imgui(drag(map = "na_to_gui_vec3", speed = "0.1"))]
     euler: Vec3,
     #[imgui(tree(node(input(map = "na_to_gui_mat4", flags = "read_only"))))]
     world: Mat4,
+    #[imgui(tree(node(input(flags = "read_only", size = "source_size"))))]
+    source: ImString,
+}
+
+fn source_size() -> [f32; 2] {
+    [512.0, 256.0]
+}
+
+struct VolumeRenderParams {
+    width: f32,
+    height: f32,
+
+    time: f32,
+    proj: Mat4,
+    proj_inv: Mat4,
+    view: Mat4,
+    // view projection
+    vp: Mat4,
+    vp_inv: Mat4,
+
+    // debug
+    cuboid_vao: GLuint,
+    cuboid_program: GLuint,
+    cuboid_u_transform: GLint,
+}
+
+impl Volume {
+    fn update(&mut self) {
+        if self.enabled {
+            // update world transform
+            self.world = glm::translation(&self.position)
+                * glm::rotation(self.euler.x, &Vec3::x())
+                * glm::rotation(self.euler.y, &Vec3::y())
+                * glm::rotation(self.euler.z, &Vec3::z())
+                * glm::scaling(&self.scale);
+        }
+    }
+
+    #[rustfmt::skip]
+    fn render(&mut self, params: &VolumeRenderParams) {
+        let mvp = params.vp * self.world;
+        let mvp_inv = glm::inverse(&mvp);
+        let world_inv = glm::inverse(&self.world);
+
+        unsafe {
+            if self.enabled {
+                check!(gl::BindVertexArray(params.cuboid_vao));
+
+                check!(gl::UseProgram(self.program));
+                check!(gl::Uniform2f(
+                    self.u_resolution,
+                    params.width,
+                    params.height
+                ));
+                check!(gl::Uniform1f(self.u_time, (params.time + self.time_shift) * self.time_dilation));
+                check!(gl::UniformMatrix4fv(self.u_mvp, 1, gl::FALSE, mvp.as_ptr()));
+                check!(gl::UniformMatrix4fv(self.u_mvp_inv, 1, gl::FALSE, mvp_inv.as_ptr()));
+                check!(gl::UniformMatrix4fv(self.u_vp, 1, gl::FALSE, params.vp.as_ptr()));
+                check!(gl::UniformMatrix4fv(self.u_vp_inv, 1, gl::FALSE, params.vp_inv.as_ptr()));
+                check!(gl::UniformMatrix4fv(self.u_proj, 1, gl::FALSE, params.proj.as_ptr()));
+                check!(gl::UniformMatrix4fv(self.u_proj_inv, 1, gl::FALSE, params.proj_inv.as_ptr()));
+                check!(gl::UniformMatrix4fv(self.u_world, 1, gl::FALSE, self.world.as_ptr()));
+                check!(gl::UniformMatrix4fv(self.u_world_inv, 1, gl::FALSE, world_inv.as_ptr()));
+                check!(gl::Enable(gl::CULL_FACE));
+                check!(gl::CullFace(gl::BACK));
+                check!(gl::DrawElements(gl::TRIANGLES, 36, gl::UNSIGNED_SHORT, ptr::null()));
+                check!(gl::Disable(gl::CULL_FACE));
+
+                if self.wireframe {
+                    check!(gl::UseProgram(params.cuboid_program));
+                    check!(gl::UniformMatrix4fv(params.cuboid_u_transform, 1, gl::FALSE, mvp.as_ptr()));
+
+                    check!(gl::Enable(gl::POLYGON_OFFSET_LINE));
+                    check!(gl::PolygonOffset(-1.0, -1.0));
+                    check!(gl::PolygonMode(gl::FRONT_AND_BACK, gl::LINE));
+                    check!(gl::DrawElements(gl::TRIANGLES, 36, gl::UNSIGNED_SHORT, ptr::null()));
+                    check!(gl::PolygonMode(gl::FRONT_AND_BACK, gl::FILL));
+                    check!(gl::Disable(gl::POLYGON_OFFSET_LINE));
+                }
+
+                check!(gl::BindVertexArray(0));
+                check!(gl::UseProgram(0));
+            }
+        }
+    }
 }
 
 impl Drop for Volume {
@@ -124,9 +211,9 @@ impl Drop for Volume {
     }
 }
 
-impl Default for App {
+impl App {
     #[rustfmt::skip]
-    fn default() -> Self {
+    pub fn new(width: usize, height: usize) -> Self {
         let (gl_cuboid_vbo, gl_cuboid_ebo, gl_cuboid_vao) = unsafe {
             let mut buffers: [GLuint; 2] = mem::zeroed();
             let mut vao = mem::zeroed();
@@ -140,7 +227,6 @@ impl Default for App {
                 1.0, -1.0, 1.0,
                 1.0, -1.0, -1.0,
                 -1.0, -1.0, -1.0,
-
                 -1.0, 1.0, 1.0,
                 1.0, 1.0, 1.0,
                 1.0, 1.0, -1.0,
@@ -208,11 +294,10 @@ impl Default for App {
             );
             (program, unif[0])
         };
-        let (cam_proj, cam_view) = (glm::identity(), glm::identity());
-        let volume = unsafe {
-            let (program, uniforms) = create_program(
-                include_bytes!("shaders/volume.vert"),
-                include_bytes!("shaders/volume.frag"),
+        fn create_volume(vert: &[u8], frag: &[u8]) -> Volume {
+            let (program, uniforms) = unsafe { create_program(
+                vert,
+                frag,
                 &[
                     "u_resolution\0",
                     "u_time\0",
@@ -225,10 +310,12 @@ impl Default for App {
                     "u_world\0",
                     "u_world_inv\0",
                 ],
-            );
+            )};
             Volume {
-                enabled: true,
+                enabled: false,
                 wireframe: true,
+                time_shift: 0.0,
+                time_dilation: 1.0,
                 program,
                 u_resolution: uniforms[0],
                 u_time: uniforms[1],
@@ -243,10 +330,22 @@ impl Default for App {
                 position: glm::vec3(0.0, 0.0, 0.0),
                 scale: glm::vec3(1.0, 1.0, 1.0),
                 euler: glm::vec3(0.0, 0.0, 0.0),
-                world: glm::identity()
+                world: glm::identity(),
+                source: unsafe { ImString::from_utf8_unchecked(frag.to_vec()) },
             }
-        };
+        }
+        let (mut volume0, volume1, volume2, volume3) =
+            (
+                create_volume(include_bytes!("shaders/volume.vert"),  include_bytes!("shaders/volume0.frag")),
+                create_volume(include_bytes!("shaders/volume.vert"),  include_bytes!("shaders/volume0.frag")),
+                create_volume(include_bytes!("shaders/volume.vert"),  include_bytes!("shaders/volume0.frag")),
+                create_volume(include_bytes!("shaders/volume.vert"),  include_bytes!("shaders/volume0.frag")),
+            );
+        volume0.enabled = true;
+        let (cam_proj, cam_view) = (glm::identity(), glm::identity());
         Self {
+            app_width: width,
+            app_height: height,
             app_back: [0.5, 0.5, 0.5, 1.0],
             app_time: 0.0,
             app_time_enabled: true,
@@ -256,7 +355,7 @@ impl Default for App {
             gl_cuboid_vao,
             gl_cuboid_program,
             gl_cuboid_transform,
-            cam_orbit: true,
+            cam_orbit: false,
             cam_orbit_speed: 1.0,
             cam_eye: glm::vec3(3.3, 1.9, 3.5),
             cam_center: glm::vec3(0.0, 0.0, 0.0),
@@ -267,7 +366,10 @@ impl Default for App {
             cam_far: 1000.0,
             cam_proj,
             cam_view,
-            volume,
+            volume0,
+            volume1,
+            volume2,
+            volume3,
         }
     }
 }
@@ -276,6 +378,10 @@ impl App {
     #[rustfmt::skip]
     pub fn handle_event(&mut self, event: &Event) {
         match event {
+            Event::Window { win_event: WindowEvent::Resized(w, h), .. } => {
+                self.app_width = *w as usize;
+                self.app_height = *h as usize;
+            },
             Event::MouseWheel { x, y, .. } => {
                 let c = -8.0;
                 self.move_radius(*y as f32 * c, 1.0 / 60.0);
@@ -312,15 +418,10 @@ impl App {
     }
 
     fn update_volume(&mut self) {
-        if self.volume.enabled {
-            // update world transform
-            let world = glm::translation(&self.volume.position)
-                * glm::scaling(&self.volume.scale)
-                * glm::rotation(self.volume.euler.x, &Vec3::x())
-                * glm::rotation(self.volume.euler.y, &Vec3::y())
-                * glm::rotation(self.volume.euler.z, &Vec3::z());
-            self.volume.world = world;
-        }
+        self.volume0.update();
+        self.volume1.update();
+        self.volume2.update();
+        self.volume3.update();
     }
 
     fn move_radius(&mut self, velo: f32, dt: f32) {
@@ -363,49 +464,41 @@ impl App {
         self.update_camera();
         self.update_volume();
         unsafe {
+            let (width, height) = (self.app_width as f32, self.app_height as f32);
             let [r, g, b, a] = self.app_back;
             check!(gl::ClearColor(r, g, b, a));
             check!(gl::Enable(gl::DEPTH_TEST));
             check!(gl::Clear(gl::COLOR_BUFFER_BIT | gl::DEPTH_BUFFER_BIT));
+            check!(gl::Viewport(0, 0, self.app_width as _, self.app_height as _));
 
-            let aspect = 4.0 / 3.0;
+            let aspect = width / height;
             self.cam_proj = glm::perspective(aspect, self.cam_fov_rad, self.cam_near, self.cam_far);
             let offset = glm::translation(&self.cam_offset);
             self.cam_view = offset * glm::look_at(&self.cam_eye, &self.cam_center, &self.cam_up);
             let vp = self.cam_proj * self.cam_view;
-            let mvp = vp * self.volume.world;
+            let mvp = vp * self.volume0.world;
 
-            if self.volume.enabled {
-                check!(gl::BindVertexArray(self.gl_cuboid_vao));
+            let params = VolumeRenderParams {
+                width,
+                height,
 
-                check!(gl::UseProgram(self.volume.program));
-                check!(gl::Uniform2f(self.volume.u_resolution, 800.0, 600.0));
-                check!(gl::Uniform1f(self.volume.u_time, self.app_time));
-                check!(gl::UniformMatrix4fv(self.volume.u_mvp, 1, gl::FALSE, mvp.as_ptr()));
-                check!(gl::UniformMatrix4fv(self.volume.u_mvp_inv, 1, gl::FALSE, glm::inverse(&mvp).as_ptr()));
-                check!(gl::UniformMatrix4fv(self.volume.u_vp, 1, gl::FALSE, vp.as_ptr()));
-                check!(gl::UniformMatrix4fv(self.volume.u_vp_inv, 1, gl::FALSE, glm::inverse(&vp).as_ptr()));
-                check!(gl::UniformMatrix4fv(self.volume.u_proj, 1, gl::FALSE, self.cam_proj.as_ptr()));
-                check!(gl::UniformMatrix4fv(self.volume.u_proj_inv, 1, gl::FALSE, glm::inverse(&self.cam_proj).as_ptr()));
-                check!(gl::UniformMatrix4fv(self.volume.u_world, 1, gl::FALSE, self.volume.world.as_ptr()));
-                check!(gl::UniformMatrix4fv(self.volume.u_world_inv, 1, gl::FALSE, glm::inverse(&self.volume.world).as_ptr()));
-                check!(gl::DrawElements(gl::TRIANGLES, 36, gl::UNSIGNED_SHORT, ptr::null()));
+                time: self.app_time,
+                proj: self.cam_proj,
+                proj_inv: glm::inverse(&self.cam_proj),
+                view: self.cam_view,
+                vp,
+                vp_inv: glm::inverse(&vp),
+                cuboid_vao: self.gl_cuboid_vao,
+                cuboid_program: self.gl_cuboid_program,
+                cuboid_u_transform: self.gl_cuboid_transform,
+            };
 
-                if self.volume.wireframe {
-                    check!(gl::UseProgram(self.gl_cuboid_program));
-                    check!(gl::UniformMatrix4fv(self.gl_cuboid_transform, 1, gl::FALSE, mvp.as_ptr()));
+            self.volume0.render(&params);
+            self.volume1.render(&params);
+            self.volume2.render(&params);
+            self.volume3.render(&params);
 
-                    check!(gl::Enable(gl::POLYGON_OFFSET_LINE));
-                    check!(gl::PolygonOffset(-1.0, -1.0));
-                    check!(gl::PolygonMode(gl::FRONT_AND_BACK, gl::LINE));
-                    check!(gl::DrawElements(gl::TRIANGLES, 36, gl::UNSIGNED_SHORT, ptr::null()));
-                    check!(gl::PolygonMode(gl::FRONT_AND_BACK, gl::FILL));
-                    check!(gl::Disable(gl::POLYGON_OFFSET_LINE));
-                }
-
-                check!(gl::BindVertexArray(0));
-                check!(gl::UseProgram(0));
-            }
+            check!(gl::Disable(gl::DEPTH_TEST));
         }
     }
 }
